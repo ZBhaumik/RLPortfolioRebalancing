@@ -268,31 +268,36 @@ class DQNAgent:
     def act(self, state):
         if np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        act_values = self.model.predict(state)
+        act_values = self.model.predict(state, verbose=0)
         return np.argmax(act_values[0])
 
     def expReplay(self, batch_size):
-        mini_batch = []
-        l = len(self.memory)
-        for i in range(l - batch_size + 1, l):
-            mini_batch.append(self.memory[i])
+        if len(self.memory) < batch_size:
+            return
+        minibatch = random.sample(self.memory, batch_size)
+        states = np.array([i[0] for i in minibatch])
+        actions = np.array([i[1] for i in minibatch])
+        rewards = np.array([i[2] for i in minibatch])
+        next_states = np.array([i[3] for i in minibatch])
+        dones = np.array([i[4] for i in minibatch])
 
-        for state, action, reward, next_state, done in mini_batch:
-            target = reward
-            if not done:
-                target = reward + self.gamma * np.amax(self.model.predict(next_state)[0])
-            target_f = self.model.predict(state)
-            target_f[0][action] = target
-            self.model.fit(state, target_f, epochs=1, verbose=0)
+        states = np.squeeze(states, axis=1)  # reshape from (batch_size, 1, n_days) to (batch_size, n_days)
+        next_states = np.squeeze(next_states, axis=1)  # reshape from (batch_size, 1, n_days) to (batch_size, n_days)
 
+        targets = rewards + self.gamma * (np.amax(self.model.predict(next_states, verbose=0), axis=1)) * (1 - dones)
+        targets_full = self.model.predict(states, verbose=0)
+        ind = np.array([i for i in range(batch_size)])
+        targets_full[[ind], [actions]] = targets
+        self.model.fit(states, targets_full, epochs=1, verbose=0)
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
     def act(self, state):
         if np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        act_values = self.model.predict(state)
+        act_values = self.model.predict(state, verbose=0)
         return np.argmax(act_values[0])
 
 
