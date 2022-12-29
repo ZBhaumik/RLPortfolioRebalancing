@@ -5,17 +5,17 @@ import random
 import yfinance as yf
 
 dates = [
-    "2016-01-01",
+    "2010-01-01",
     "2019-06-06",
 ]
 
 def yfinance_retrieve(stock_names, start_date, end_date):
-    stock_data = pd.DataFrame(index=pd.date_range(start=start_date, end=end_date))
+    stock_data = {}
     for stock in stock_names:
-        df = yf.download(stock, start=start_date, end=end_date)
+        df = yf.download(stock, start=start_date, end=end_date, progress=False)
         df = df[["Adj Close"]]
         df.columns = [stock]
-        stock_data = stock_data.join(df, how="outer")
+        stock_data[stock] = df["Adj Close"]
     return stock_data
 
 import numpy as np
@@ -119,6 +119,7 @@ class QTrader:
         if (len(self.memory) > batch_size) and (t%batch_size==0):
           self.replay(batch_size)
           self.update_target_model()  # Update target model
+      self.total_profit = sum(self.portfolio.values()) - sum(self.initial_portfolio.values())
       print(f"Episode {episode+1}: Total profit = {self.total_profit}")
   def test(self, num_episodes, batch_size):
     self.epsilon = 0  # Set epsilon to 0 to disable exploration
