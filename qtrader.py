@@ -29,15 +29,17 @@ import pandas as pd
 import tensorflow as tf
 
 class QTrader:
-  def __init__(self, stock_data, initial_portfolio, epsilon=0.5, alpha=0.5, gamma=0.9):
+  def __init__(self, stock_data, initial_portfolio, funds, epsilon=0.5, alpha=0.5, gamma=0.9, decay=0.99):
     self.stock_data = stock_data
     self.initial_portfolio = initial_portfolio
     self.epsilon = epsilon
     self.alpha = alpha
     self.gamma = gamma
+    self.decay = decay
     self.portfolio = initial_portfolio.copy()
     self.memory = deque(maxlen=100000)
     self.buy_sell_history = []
+    self.funds = funds
 
     self.state_dim = len(self.portfolio.keys())
     self.action_dim = sum(self.portfolio.values())  # Set action_dim to the total number of shares that can be bought or sold
@@ -63,9 +65,12 @@ class QTrader:
   def update_target_model(self):
     self.target_model.set_weights(self.model.get_weights())
 
-  def choose_actions(self, state):
+  def choose_actions(self, state, t):
+    self.epsilon *= self.decay
     actions = []
+    funds=self.funds
     keys = list(self.portfolio.keys())  # Convert keys to a list
+    total_cost = 0  # Initialize the total cost to 0
     for i, stock in enumerate(keys):  # Iterate over the list of keys
       if np.random.uniform() < self.epsilon:
         low = min(self.portfolio.values())
@@ -74,24 +79,32 @@ class QTrader:
       else:
         q_values = self.model.predict(state.reshape(1, -1), verbose=0)
         action = np.argmax(q_values[0])
+      # Calculate the cost of the selected action
+      cost = self.stock_data[stock][t] * action
+      total_cost += cost  # Add the cost to the total cost
+      # If the total cost exceeds the available funds, set action to the maximum number of shares that can be bought
+      if total_cost > funds:
+        action = (funds - (total_cost - cost)) // self.stock_data[stock][t]
       low = -self.portfolio[stock]  # Use stock to access the corresponding value in self.portfolio
       high = self.portfolio[stock]
       action = np.clip(action, low, high)
       # Ensure that action is within the valid range for the target_vec array
       action = np.clip(action, -self.action_dim, self.action_dim-1)
       actions.append(action)
+    actions = [int(x) for x in actions]
     return actions
 
   def take_actions(self, actions, t):
     reward = 0
     for i, stock in enumerate(self.portfolio.keys()):
       self.portfolio[stock] += actions[i]
-      reward += self.portfolio[stock] * (self.stock_data[stock][t+1] - self.stock_data[stock][t])
+      self.funds += self.stock_data[stock][t] * actions[i]  # Update the funds variable
+    reward += sum(self.portfolio.values()) * (self.stock_data[stock][t+1] - self.stock_data[stock][t])
     return reward
 
   def update_memory(self, t):
     state = self.get_state(t)
-    actions = self.choose_actions(state)
+    actions = self.choose_actions(state, t)
     reward = self.take_actions(actions, t)
     next_state = self.get_state(t+1)
     self.memory.append((state, actions, reward, next_state))
@@ -114,17 +127,30 @@ class QTrader:
     for episode in range(num_episodes):
       self.portfolio = self.initial_portfolio.copy()
       self.buy_sell_history = []
+      self.funds=sum([train_data[stock][0] * initial_portfolio[stock] for stock in initial_portfolio.keys()])
+
       for t in range(len(self.stock_data["AAPL"]) - 1):
-        print(t)
         self.update_memory(t)
         if (len(self.memory) > batch_size) and (t%batch_size==0):
           self.replay(batch_size)
           self.update_target_model()  # Update target model
       self.total_profit = sum(self.portfolio.values()) - sum(self.initial_portfolio.values())
       print(f"Episode {episode+1}: Total profit = {self.total_profit}")
-  def test(self, num_episodes, batch_size):
-    self.epsilon = 0  # Set epsilon to 0 to disable exploration
-    self.trade(num_episodes, batch_size)
+
+  def test(self):
+    self.epsilon = 0.0  # Set epsilon to 0 to disable exploration during test
+    total_profit = 0
+    state = self.get_state(0)
+    self.portfolio = self.initial_portfolio.copy()  # Reset portfolio to initial values
+    for t in range(len(self.stock_data.index)-1):
+      actions = self.choose_actions(state, t)
+      reward, done = self.take_actions(actions, t)
+      total_profit += reward
+      state = self.get_state(t+1)
+      if done:
+        break
+
+    print(f"Total profit: {total_profit}")
 
 
 
@@ -141,11 +167,11 @@ test_data = stock_data.iloc[split_index:]
 initial_portfolio = {"AAPL": 10, "GOOGL": 5, "MSFT": 15}
 
 # Initialize StockTrader object
-trader = QTrader(train_data, initial_portfolio)
+trader = QTrader(train_data, initial_portfolio, funds=sum([train_data[stock][0] * initial_portfolio[stock] for stock in initial_portfolio.keys()]))
 
 # Train the trader
 trader.trade(num_episodes=10, batch_size=32)
 
 # Test the trader on unseen data
 trader.stock_data = test_data  # Set trader's stock data to test data
-trader.test(num_episodes=5, batch_size=32)
+trader.test()
