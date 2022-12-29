@@ -10,12 +10,12 @@ dates = [
 ]
 
 def yfinance_retrieve(stock_names, start_date, end_date):
-    stock_data = {}
+    stock_data = pd.DataFrame()
     for stock in stock_names:
-        df = yf.download(stock, start=start_date, end=end_date, progress=False)
+        df = yf.download(stock, start=start_date, end=end_date)
         df = df[["Adj Close"]]
         df.columns = [stock]
-        stock_data[stock] = df["Adj Close"]
+        stock_data = stock_data.join(df, how="outer")
     return stock_data
 
 import numpy as np
@@ -115,6 +115,7 @@ class QTrader:
       self.portfolio = self.initial_portfolio.copy()
       self.buy_sell_history = []
       for t in range(len(self.stock_data["AAPL"]) - 1):
+        print(t)
         self.update_memory(t)
         if (len(self.memory) > batch_size) and (t%batch_size==0):
           self.replay(batch_size)
