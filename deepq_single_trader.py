@@ -18,7 +18,7 @@ def format_allocation(allocation):
 
 # Formats Currency
 def format_currency(price):
-    return '${0:.2f}'.format(abs(price))
+    return '${0:.2f}'.format(price)
 
 #UTILS (continued)
 
@@ -117,7 +117,6 @@ from collections import deque
 import dill as pickle
 
 #METHODS (continued)
-
 def train_model(agent, episode, data, stock, ep_count=100, batch_size=32, window_size=10):
     total_profit = 0
     data_length = len(data[stock]) - 1
@@ -129,23 +128,21 @@ def train_model(agent, episode, data, stock, ep_count=100, batch_size=32, window
 
         total_profit = 0
         agent.inventory = []
+        agent.memory = []
 
         for t in range(data_length):
             action = agent.act(state)
-
-            # sit
             next_state = get_state(data, t + 1, window_size, stock)
             reward = 0
-
             if action == 1:  # buy
                 agent.inventory.append(data[stock][t])
-                print("Buy: " + format_currency(data[stock][t]))
+                #print("Buy: " + format_currency(data[stock][t]))
 
             elif action == 2 and len(agent.inventory) > 0:  # sell
                 bought_price = agent.inventory.pop(0)
-                reward = max(data[stock][t] - bought_price, 0)
+                reward = data[stock][t] - bought_price
                 total_profit += data[stock][t] - bought_price
-                print("Sell: " + format_currency(data[stock][t]) + " | Profit: " + format_currency(data[stock][t] - bought_price))
+                #print("Sell: " + format_currency(data[stock][t]) + " | Profit: " + format_currency(data[stock][t] - bought_price))
 
             done = True if t == data_length - 1 else False
             agent.memory.append((state, action, reward, next_state, done))
@@ -156,8 +153,8 @@ def train_model(agent, episode, data, stock, ep_count=100, batch_size=32, window
                 print("Total Profit: " + format_currency(total_profit))
                 print("--------------------------------")
 
-            if len(agent.memory) > batch_size:
-                agent.expReplay(batch_size)
+            if t%batch_size==0:
+                agent.expReplay(batch_size, t)
 
         if e % 10 == 0:
             agent.model.save("models/model_ep" + str(e))
@@ -240,13 +237,27 @@ from collections import deque
 from keras.models import Sequential
 from keras.layers import Dense
 from keras.optimizers import Adam
+from keras.models import clone_model
+import tensorflow as tf
+
+def huber_loss(y_true, y_pred, clip_delta=1.0):
+    """Huber loss - Custom Loss Function for Q Learning
+
+    Links: 	https://en.wikipedia.org/wiki/Huber_loss
+            https://jaromiru.com/2017/05/27/on-using-huber-loss-in-deep-q-learning/
+    """
+    error = y_true - y_pred
+    cond = K.abs(error) <= clip_delta
+    squared_loss = 0.5 * K.square(error)
+    quadratic_loss = 0.5 * K.square(clip_delta) + clip_delta * (K.abs(error) - clip_delta)
+    return K.mean(tf.where(cond, squared_loss, quadratic_loss))
 
 class DQNAgent:
     def __init__(self, state_size, action_size=3, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01, alpha=0.001, alpha_decay=0.01, gamma=0.95):
         self.state_size = state_size
         print(state_size)
         self.action_size = action_size
-        self.memory = deque(maxlen=2000)
+        self.memory = deque(maxlen=10000)
         self.inventory = []
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
@@ -255,6 +266,7 @@ class DQNAgent:
         self.alpha_decay = alpha_decay
         self.gamma = gamma
         self.model = self._build_model()
+        self.target_model = clone_model(self.model)
 
     def _build_model(self):
         model = Sequential()
@@ -262,7 +274,7 @@ class DQNAgent:
         model.add(Dense(units=64, activation="relu"))
         model.add(Dense(units=128, activation="relu"))
         model.add(Dense(units=self.action_size, activation="linear"))
-        model.compile(loss="mse", optimizer=Adam(lr=self.alpha, decay=self.alpha_decay))
+        model.compile(loss=huber_loss, optimizer=Adam(lr=self.alpha, decay=self.alpha_decay))
         return model
 
     def act(self, state):
@@ -271,9 +283,11 @@ class DQNAgent:
         act_values = self.model.predict(state, verbose=0)
         return np.argmax(act_values[0])
 
-    def expReplay(self, batch_size):
+    def expReplay(self, batch_size, time):
         if len(self.memory) < batch_size:
             return
+        if(time%(3*batch_size)==0):
+            self.target_model.set_weights(self.model.get_weights())
         minibatch = random.sample(self.memory, batch_size)
         states = np.array([i[0] for i in minibatch])
         actions = np.array([i[1] for i in minibatch])
@@ -284,16 +298,16 @@ class DQNAgent:
         states = np.squeeze(states, axis=1)  # reshape from (batch_size, 1, n_days) to (batch_size, n_days)
         next_states = np.squeeze(next_states, axis=1)  # reshape from (batch_size, 1, n_days) to (batch_size, n_days)
 
-        targets = rewards + self.gamma * (np.amax(self.model.predict(next_states, verbose=0), axis=1)) * (1 - dones)
-        targets_full = self.model.predict(states, verbose=0)
-        ind = np.array([i for i in range(batch_size)])
-        targets_full[[ind], [actions]] = targets
+        targets = rewards + self.gamma * (np.amax(self.target_model.predict(next_states, verbose=0), axis=1)) * (1 - dones)
+        targets_full = np.zeros((batch_size, self.action_size))
+        targets_full[np.arange(batch_size), actions] = targets
         self.model.fit(states, targets_full, epochs=1, verbose=0)
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
 
     def remember(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
+
     def act(self, state):
         if np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
