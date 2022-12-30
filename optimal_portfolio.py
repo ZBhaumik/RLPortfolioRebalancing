@@ -6,8 +6,8 @@ import random
 import yfinance as yf
 
 dates = [
-    "2010-01-01",
-    "2019-06-06",
+    "2010-02-06",
+    "2018-06-06",
 ]
 
 batch_size=32
@@ -130,7 +130,7 @@ class QTrader:
         self.memory.append((state, actions, reward, next_state, done))
 
     def get_portfolio_value(self, t):
-        portfolio_value = 0
+        portfolio_value = self.funds
         for stock in self.portfolio.keys():
             portfolio_value += self.stock_data[stock][t] * self.portfolio[stock]
         return portfolio_value
@@ -167,64 +167,52 @@ class QTrader:
         # Update the model's weights using the target values and the Q-learning formula
         self.model.fit(np.array(states), np.array(targets), epochs=1, verbose=0)
 
+    def reset(self):
+        self.memory = deque(maxlen=100000)
+        self.buy_sell_history = []
+        self.epsilon = 0.5
+        self.portfolio = self.initial_portfolio.copy()
+        self.funds = self.initial_portfolio_value
+        self.stock_prices = {stock: self.stock_data[stock][0] for stock in self.portfolio.keys()}
+
 
 if __name__ == "__main__":
     stock_names = ["AAPL", "GOOGL", "MSFT", "AMZN"]
     stock_data = yfinance_retrieve(stock_names, dates[0], dates[1])
 
     # Split the stock data into training, validation, and test sets
-    train_data = stock_data[: int(0.7 * stock_data.shape[0])]
-    val_data = stock_data[
-        int(0.7 * stock_data.shape[0]) : int(0.85 * stock_data.shape[0])
-    ]
-    test_data = stock_data[int(0.85 * stock_data.shape[0]) :]
+    train_data = stock_data[: int(0.8 * stock_data.shape[0])]
+    val_data = stock_data[int(0.8 * stock_data.shape[0]) :]
 
     initial_portfolio = {stock: 0 for stock in stock_names}
-    funds = 10000
-
-    q_trader = QTrader(stock_data, initial_portfolio, funds)
+    q_trader = QTrader(train_data, initial_portfolio, funds=10000)
     q_trader.update_target_model()
 
-    # Train the model on multiple episodes of the training set
-    num_episodes = 10  # Set the number of episodes to train on
+    #AGENT TRAINING, VALIDATION, TESTING
+    num_episodes = 10
     for episode in range(num_episodes):
         print(f"Episode {episode+1}")
-        for t in range(train_data.shape[0]):
-            print(t)
+        q_trader.stock_data=train_data
+        q_trader.reset()
+        for t in range(train_data.shape[0]-1):
             state = q_trader.get_state(t)
             portfolio_value_change = q_trader.act(state, t)
-            reward = portfolio_value_change / q_trader.initial_portfolio_value
             next_state = q_trader.get_state(t + 1)
             done = False
             if t == train_data.shape[0] - 2:
                 done = True
-            q_trader.remember(
-                state, q_trader.buy_sell_history[-1], reward, next_state, done
-            )
+            q_trader.remember(state, q_trader.buy_sell_history[-1], portfolio_value_change / q_trader.initial_portfolio_value, next_state, done)
             if (len(q_trader.memory) > batch_size) and (t%batch_size==0):
                 q_trader.replay(batch_size)
-
-        # Calculate the return for the training set
         train_return = q_trader.get_portfolio_value(train_data.shape[0]-1)/q_trader.initial_portfolio_value
-        print(q_trader.funds)
         print(q_trader.portfolio)
         print(f"Training return: {train_return}")
-
-        # Calculate the return for the validation set
-        #THIS IS WRONG. SO IS THE TEST METHOD.
-        val_return = 0
-        for t in range(val_data.shape[0]):
-            state = q_trader.get_state(t)
-            portfolio_value_change = q_trader.act(state, t)
-            reward = portfolio_value_change / q_trader.initial_portfolio_value
-            val_return += reward
+        q_trader.stock_data=val_data
+        q_trader.reset()
+        q_trader.epsilon=0
+        for t in range(val_data.shape[0]-1):
+            q_trader.act(q_trader.get_state(t), t)
+        val_return = q_trader.get_portfolio_value(val_data.shape[0]-1)/q_trader.initial_portfolio_value
+        print(q_trader.portfolio)
         print(f"Validation return: {val_return}")
-
-    # Test the model on the test set
-    test_return = 0
-    for t in range(test_data.shape[0]):
-        state = q_trader.get_state(t)
-        portfolio_value_change = q_trader.act(state, t)
-        reward = portfolio_value_change / q_trader.initial_portfolio_value
-        test_return += reward
-    print(f"Test return: {test_return}")
+        q_trader.update_target_model()
